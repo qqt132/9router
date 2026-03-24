@@ -10,6 +10,8 @@ import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, getProviderAlias, is
 import { getModelsByProviderId } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
+import { translate } from "@/i18n/runtime";
+
 export default function ProviderDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -290,23 +292,41 @@ export default function ProviderDetailPage() {
         body: JSON.stringify({ count: 1 }),
       });
 
-      const data = await res.json();
-      
-      if (data.logs) {
-        setRegisterLogs(data.logs);
-      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-      if (res.ok && data.success) {
-        await fetchConnections();
-        setTimeout(() => {
-          setShowRegisterModal(false);
-          setRegisterLogs([]);
-        }, 2000);
-      } else {
-        setRegisterLogs(prev => [...prev, `Error: ${data.error || 'Registration failed'}`]);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop(); // keep incomplete line
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.type === "log") {
+              setRegisterLogs(prev => [...prev, event.message]);
+            } else if (event.type === "success") {
+              setRegisterLogs(prev => [...prev, `✅ ${event.connection?.email || "Account registered successfully"}`]);
+              await fetchConnections();
+              setTimeout(() => {
+                setShowRegisterModal(false);
+                setRegisterLogs([]);
+              }, 2000);
+            } else if (event.type === "error") {
+              setRegisterLogs(prev => [...prev, `❌ ${event.message}`]);
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
       }
     } catch (error) {
-      setRegisterLogs(prev => [...prev, `Error: ${error.message}`]);
+      setRegisterLogs(prev => [...prev, `❌ ${error.message}`]);
     } finally {
       setRegisteringFreeAccount(false);
     }
@@ -825,7 +845,7 @@ export default function ProviderDetailPage() {
                     onClick={handleRegisterFreeAccount}
                     disabled={registeringFreeAccount}
                   >
-                    {registeringFreeAccount ? "Registering..." : "Add Free Account"}
+                    {registeringFreeAccount ? translate("Registering...") : translate("Add Free Account")}
                   </Button>
                 )}
               </div>
@@ -862,7 +882,7 @@ export default function ProviderDetailPage() {
                     onClick={handleRegisterFreeAccount}
                     disabled={registeringFreeAccount}
                   >
-                    {registeringFreeAccount ? "Registering..." : "Add Free Account"}
+                    {registeringFreeAccount ? translate("Registering...") : translate("Add Free Account")}
                   </Button>
                 )}
               </div>
@@ -921,13 +941,13 @@ export default function ProviderDetailPage() {
       {showRegisterModal && (
         <Modal 
           isOpen={showRegisterModal} 
-          title="Registering Free Codex Account" 
+          title={translate("Registering Free Codex Account")} 
           onClose={() => !registeringFreeAccount && setShowRegisterModal(false)}
         >
           <div className="flex flex-col gap-4">
-            <div className="bg-black/5 dark:bg-white/5 rounded-lg p-4 max-h-96 overflow-y-auto font-mono text-xs">
+            <div className="bg-black/5 dark:bg-white/5 rounded-lg p-4 max-h-96 overflow-y-auto font-mono text-xs" ref={el => { if (el) el.scrollTop = el.scrollHeight; }}>
               {registerLogs.length === 0 ? (
-                <div className="text-center text-text-muted">Starting registration...</div>
+                <div className="text-center text-text-muted">{translate("Starting registration...")}</div>
               ) : (
                 registerLogs.map((log, i) => (
                   <div key={i} className="text-text-main whitespace-pre-wrap break-all">
@@ -939,7 +959,7 @@ export default function ProviderDetailPage() {
             {registeringFreeAccount && (
               <div className="flex items-center justify-center gap-2 text-sm text-text-muted">
                 <span className="material-symbols-outlined animate-spin">progress_activity</span>
-                Registering account...
+                {translate("Registering account...")}
               </div>
             )}
             {!registeringFreeAccount && (

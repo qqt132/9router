@@ -6,113 +6,102 @@ import { createProviderConnection } from "@/models";
 /**
  * POST /api/providers/codex/register
  * Auto-register a free Codex account using Python script
+ * Returns a streaming SSE response with real-time logs
  */
 export async function POST(request) {
-  try {
-    const { count = 1 } = await request.json().catch(() => ({}));
-    
-    // Path to Python script
-    const scriptPath = path.join(process.cwd(), "scripts/openai-register/register.py");
-    
-    // Spawn Python process
-    const pythonProcess = spawn("python3", [
-      scriptPath,
-      "--count", String(count),
-      "--quiet"
-    ]);
+  const { count = 1 } = await request.json().catch(() => ({}));
 
-    let stdout = "";
-    let stderr = "";
-    const logs = [];
+  const scriptPath = path.join(process.cwd(), "scripts/openai-register/register.py");
 
-    // Collect stdout (JSON result)
-    pythonProcess.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
+  const encoder = new TextEncoder();
 
-    // Collect stderr (logs)
-    pythonProcess.stderr.on("data", (data) => {
-      const text = data.toString();
-      stderr += text;
-      logs.push(text.trim());
-    });
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      };
 
-    // Wait for process to complete
-    const exitCode = await new Promise((resolve) => {
-      pythonProcess.on("close", resolve);
-    });
+      let stdout = "";
+      const pythonProcess = spawn("python3", [
+        scriptPath,
+        "--count", String(count),
+      ]);
 
-    if (exitCode !== 0) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: "Registration failed", 
-          logs,
-          stderr 
-        },
-        { status: 500 }
-      );
-    }
+      pythonProcess.stderr.on("data", (data) => {
+        const lines = data.toString().split("\n").filter(Boolean);
+        for (const line of lines) {
+          send({ type: "log", message: line });
+        }
+      });
 
-    // Parse result
-    let result;
-    try {
-      result = JSON.parse(stdout);
-    } catch (error) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: "Failed to parse registration result", 
-          logs,
-          stdout 
-        },
-        { status: 500 }
-      );
-    }
+      pythonProcess.stdout.on("data", (data) => {
+        stdout += data.toString();
+      });
 
-    // Check if registration succeeded
-    if (!result.success) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: result.error_message || "Registration failed", 
-          logs: result.logs || logs 
-        },
-        { status: 500 }
-      );
-    }
+      const exitCode = await new Promise((resolve) => {
+        pythonProcess.on("close", resolve);
+      });
 
-    // Save to database
-    const connection = await createProviderConnection({
-      provider: "codex",
-      authType: "oauth",
-      email: result.email,
-      displayName: result.email,
-      accessToken: result.access_token,
-      refreshToken: result.refresh_token,
-      idToken: result.id_token,
-      expiresIn: result.expires_in,
-      expiresAt: result.expires_in 
-        ? new Date(Date.now() + result.expires_in * 1000).toISOString() 
-        : null,
-      testStatus: "active",
-    });
+      if (exitCode !== 0) {
+        send({ type: "error", message: "Registration script failed" });
+        controller.close();
+        return;
+      }
 
-    return NextResponse.json({
-      success: true,
-      connection: {
-        id: connection.id,
-        provider: connection.provider,
-        email: connection.email,
-        displayName: connection.displayName,
-      },
-      logs: result.logs || logs,
-    });
-  } catch (error) {
-    console.error("Codex registration error:", error);
-    return NextResponse.json(
-      { success: false, error: error.message },
-      { status: 500 }
-    );
-  }
+      let result;
+      try {
+        result = JSON.parse(stdout);
+      } catch {
+        send({ type: "error", message: "Failed to parse registration result" });
+        controller.close();
+        return;
+      }
+
+      if (!result.success) {
+        send({ type: "error", message: result.error_message || "Registration failed" });
+        controller.close();
+        return;
+      }
+
+      // Save to database
+      try {
+        const connection = await createProviderConnection({
+          provider: "codex",
+          authType: "oauth",
+          email: result.email,
+          displayName: result.email,
+          accessToken: result.access_token,
+          refreshToken: result.refresh_token,
+          idToken: result.id_token,
+          expiresIn: result.expires_in,
+          expiresAt: result.expires_in
+            ? new Date(Date.now() + result.expires_in * 1000).toISOString()
+            : null,
+          testStatus: "active",
+        });
+
+        send({
+          type: "success",
+          connection: {
+            id: connection.id,
+            provider: connection.provider,
+            email: connection.email,
+            displayName: connection.displayName,
+          },
+        });
+      } catch (err) {
+        send({ type: "error", message: `Failed to save account: ${err.message}` });
+      }
+
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }

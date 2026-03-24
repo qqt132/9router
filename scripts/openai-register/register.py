@@ -60,11 +60,11 @@ class RegistrationEngine:
     def _create_email(self) -> bool:
         self.email_info = self.email_service.create_email()
         self.email = self.email_info["email"]
-        self._log(f"created tempmail inbox: {self.email}")
+        self._log(f"临时邮箱已创建: {self.email}")
         return True
     def _start_oauth(self) -> bool:
         self.oauth_start = self.oauth_manager.start_oauth()
-        self._log(f"generated oauth url: {self.oauth_start.auth_url[:100]}...")
+        self._log(f"OAuth 授权链接已生成")
         return True
     def _init_session(self) -> bool:
         self.session = self.http_client.session
@@ -77,11 +77,11 @@ class RegistrationEngine:
                 response = self.session.get(self.oauth_start.auth_url, timeout=20)
                 did = self.session.cookies.get("oai-did")
                 if did:
-                    self._log(f"device id: {did}")
+                    self._log(f"设备 ID 已获取: {did}")
                     return did
-                self._log(f"missing oai-did cookie (http {response.status_code}, attempt {attempt}/3)")
+                self._log(f"设备 ID 获取失败 (HTTP {response.status_code}, 第 {attempt}/3 次)")
             except Exception as exc:
-                self._log(f"device id fetch failed ({attempt}/3): {exc}")
+                self._log(f"设备 ID 请求异常 (第 {attempt}/3 次): {exc}")
             if attempt < 3:
                 time.sleep(attempt)
                 self.http_client.close()
@@ -90,10 +90,10 @@ class RegistrationEngine:
     def _check_sentinel(self, did: str) -> Optional[str]:
         try:
             token = self.http_client.check_sentinel(did)
-            self._log("sentinel token acquired" if token else "sentinel token not returned")
+            self._log("安全令牌已获取" if token else "安全令牌未返回")
             return token
         except Exception as exc:
-            self._log(f"sentinel check failed: {exc}")
+            self._log(f"安全令牌检查失败: {exc}")
             return None
     def _signup_headers(self, did: str, sen_token: Optional[str], referer: str) -> Dict[str, str]:
         headers = {"referer": referer, "accept": "application/json", "content-type": "application/json"}
@@ -103,7 +103,7 @@ class RegistrationEngine:
     def _submit_signup_form(self, did: str, sen_token: Optional[str]) -> SignupFormResult:
         body = json.dumps({"username": {"value": self.email, "kind": "email"}, "screen_hint": "signup"})
         response = self.session.post(OPENAI_API_ENDPOINTS["signup"], headers=self._signup_headers(did, sen_token, "https://auth.openai.com/create-account"), data=body)
-        self._log(f"signup form status: {response.status_code}")
+        self._log(f"注册表单状态: {response.status_code}")
         if response.status_code != 200:
             return SignupFormResult(False, error_message=f"HTTP {response.status_code}: {response.text[:200]}")
         try:
@@ -113,44 +113,44 @@ class RegistrationEngine:
         page_type = data.get("page", {}).get("type", "")
         is_existing = page_type == OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]
         self._is_existing_account = is_existing
-        self._log(f"signup page type: {page_type or '<unknown>'}")
+        self._log(f"注册页面类型: {page_type or '<未知>'}")
         return SignupFormResult(True, page_type=page_type, is_existing_account=is_existing, response_data=data)
     def _register_password(self) -> Tuple[bool, Optional[str]]:
         self.password = self._generate_password()
         response = self.session.post(OPENAI_API_ENDPOINTS["register"], headers={"referer": "https://auth.openai.com/create-account/password", "accept": "application/json", "content-type": "application/json"}, data=json.dumps({"password": self.password, "username": self.email}))
-        self._log(f"password register status: {response.status_code}")
+        self._log(f"密码注册状态: {response.status_code}")
         if response.status_code != 200:
-            self._log(f"password register failed: {response.text[:200]}")
+            self._log(f"密码注册失败: {response.text[:200]}")
             return False, None
         return True, self.password
     def _send_verification_code(self) -> bool:
         self._otp_sent_at = time.time()
         response = self.session.get(OPENAI_API_ENDPOINTS["send_otp"], headers={"referer": "https://auth.openai.com/create-account/password", "accept": "application/json"})
-        self._log(f"send otp status: {response.status_code}")
+        self._log(f"验证码发送状态: {response.status_code}")
         return response.status_code == 200
     def _get_verification_code(self) -> Optional[str]:
         email_id = self.email_info.get("service_id") if self.email_info else None
         code = self.email_service.get_verification_code(email=self.email, email_id=email_id, timeout=120, pattern=OTP_CODE_PATTERN, otp_sent_at=self._otp_sent_at)
         if code:
-            self._log(f"received otp code: {code}")
+            self._log(f"验证码已收到: {code}")
         return code
     def _validate_verification_code(self, code: str) -> bool:
         response = self.session.post(OPENAI_API_ENDPOINTS["validate_otp"], headers={"referer": "https://auth.openai.com/email-verification", "accept": "application/json", "content-type": "application/json"}, data=json.dumps({"code": code}))
-        self._log(f"validate otp status: {response.status_code}")
+        self._log(f"验证码校验状态: {response.status_code}")
         return response.status_code == 200
     def _create_user_account(self) -> bool:
         response = self.session.post(OPENAI_API_ENDPOINTS["create_account"], headers={"referer": "https://auth.openai.com/about-you", "accept": "application/json", "content-type": "application/json"}, data=json.dumps(generate_random_user_info()))
-        self._log(f"create account status: {response.status_code}")
+        self._log(f"账号创建状态: {response.status_code}")
         return response.status_code == 200
     def _login_with_oauth(self) -> bool:
         if not self.oauth_start:
             return False
         response = self.session.get(self.oauth_start.auth_url, timeout=20, allow_redirects=True)
-        self._log(f"oauth login final url: {response.url[:120]}...")
+        self._log(f"OAuth 登录跳转完成")
         return "code=" in response.url and "state=" in response.url
     def _fallback_login_for_workspace(self) -> bool:
         old_oauth_start = self.oauth_start
-        self._log("workspace missing; starting fallback passwordless login flow")
+        self._log("Workspace 未找到，启动备用无密码登录流程")
         try:
             self.oauth_start = self.oauth_manager.start_oauth()
             self.http_client.close()
@@ -162,13 +162,13 @@ class RegistrationEngine:
             sen_token = self._check_sentinel(did)
             login_body = json.dumps({"username": {"value": self.email, "kind": "email"}, "screen_hint": "login"})
             login_response = self.session.post(OPENAI_API_ENDPOINTS["signup"], headers=self._signup_headers(did, sen_token, "https://auth.openai.com/"), data=login_body)
-            self._log(f"fallback login submit status: {login_response.status_code}")
+            self._log(f"备用登录提交状态: {login_response.status_code}")
             if login_response.status_code != 200:
                 self.oauth_start = old_oauth_start
                 return False
             self._otp_sent_at = time.time()
             otp_response = self.session.post(OPENAI_API_ENDPOINTS["passwordless_send_otp"], headers={"referer": "https://auth.openai.com/", "accept": "application/json", "content-type": "application/json"}, data="{}")
-            self._log(f"fallback passwordless otp status: {otp_response.status_code}")
+            self._log(f"备用验证码发送状态: {otp_response.status_code}")
             if otp_response.status_code != 200:
                 self.oauth_start = old_oauth_start
                 return False
@@ -179,16 +179,16 @@ class RegistrationEngine:
             if not self._validate_verification_code(code):
                 self.oauth_start = old_oauth_start
                 return False
-            self._log("fallback login completed; workspace cookie should now be available")
+            self._log("备用登录完成，Workspace Cookie 已就绪")
             return True
         except Exception as exc:
-            self._log(f"fallback login failed: {exc}")
+            self._log(f"备用登录失败: {exc}")
             self.oauth_start = old_oauth_start
             return False
     def _get_workspace_id(self) -> Optional[str]:
         auth_cookie = self.session.cookies.get("oai-client-auth-session")
         if not auth_cookie:
-            self._log("missing oai-client-auth-session cookie")
+            self._log("Auth Cookie 缺失")
             return None
         try:
             payload = auth_cookie.split(".")[0]
@@ -197,16 +197,16 @@ class RegistrationEngine:
             workspaces = auth_json.get("workspaces") or []
             workspace_id = str((workspaces[0] or {}).get("id") or "").strip() if workspaces else ""
             if workspace_id:
-                self._log(f"workspace id: {workspace_id}")
+                self._log(f"Workspace ID 已获取: {workspace_id}")
                 return workspace_id
-            self._log("workspace missing in auth cookie")
+            self._log("Auth Cookie 中 Workspace 缺失")
             return None
         except Exception as exc:
-            self._log(f"failed to decode workspace cookie: {exc}")
+            self._log(f"Workspace Cookie 解码失败: {exc}")
             return None
     def _select_workspace(self, workspace_id: str) -> Optional[str]:
         response = self.session.post(OPENAI_API_ENDPOINTS["select_workspace"], headers={"referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent", "content-type": "application/json"}, data=json.dumps({"workspace_id": workspace_id}))
-        self._log(f"select workspace status: {response.status_code}")
+        self._log(f"Workspace 选择状态: {response.status_code}")
         if response.status_code != 200:
             return None
         return str((response.json() or {}).get("continue_url") or "").strip() or None
@@ -228,50 +228,50 @@ class RegistrationEngine:
         result = RegistrationResult(success=False)
         result.logs = self.logs
         try:
-            self._log("starting registration flow")
+            self._log("开始注册流程")
             ip_ok, location = self.http_client.check_ip_location()
             if not ip_ok:
-                result.error_message = f"unsupported ip location: {location}"
+                result.error_message = f"不支持的 IP 地区: {location}"
                 return result
-            self._log(f"ip location: {location}")
+            self._log(f"IP 地区: {location}")
             self._create_email(); result.email = self.email
             self._init_session(); self._start_oauth()
             did = self._get_device_id()
             if not did:
-                result.error_message = "failed to get device id"; return result
+                result.error_message = "获取设备 ID 失败"; return result
             sen_token = self._check_sentinel(did)
             signup_result = self._submit_signup_form(did, sen_token)
             if not signup_result.success:
                 result.error_message = signup_result.error_message; return result
             if self._is_existing_account:
-                self._otp_sent_at = time.time(); self._log("existing account detected; using login path")
+                self._otp_sent_at = time.time(); self._log("检测到已有账号，使用登录流程")
             else:
                 ok, _ = self._register_password()
                 if not ok:
-                    result.error_message = "password registration failed"; return result
+                    result.error_message = "密码注册失败"; return result
                 if not self._send_verification_code():
-                    result.error_message = "failed to send signup otp"; return result
+                    result.error_message = "验证码发送失败"; return result
             code = self._get_verification_code()
             if not code:
-                result.error_message = "failed to fetch otp"; return result
+                result.error_message = "获取验证码失败"; return result
             if not self._validate_verification_code(code):
-                result.error_message = "otp validation failed"; return result
+                result.error_message = "验证码校验失败"; return result
             if not self._is_existing_account and not self._create_user_account():
-                result.error_message = "create account failed"; return result
+                result.error_message = "账号创建失败"; return result
             self._login_with_oauth()
             workspace_id = self._get_workspace_id()
             if not workspace_id:
                 if not self._fallback_login_for_workspace():
-                    result.error_message = "workspace missing and fallback login failed"; return result
+                    result.error_message = "Workspace 获取失败，备用登录也失败"; return result
                 workspace_id = self._get_workspace_id()
                 if not workspace_id:
-                    result.error_message = "workspace still missing after fallback login"; return result
+                    result.error_message = "备用登录后 Workspace 仍未获取"; return result
             continue_url = self._select_workspace(workspace_id)
             if not continue_url:
-                result.error_message = "select workspace failed"; return result
+                result.error_message = "Workspace 选择失败"; return result
             callback_url = self._follow_redirects(continue_url)
             if not callback_url:
-                result.error_message = "failed to obtain oauth callback url"; return result
+                result.error_message = "OAuth 回调链接获取失败"; return result
             token_info = self._handle_oauth_callback(callback_url)
             result.success = True
             result.workspace_id = workspace_id
@@ -288,7 +288,7 @@ class RegistrationEngine:
             return result
         except Exception as exc:
             result.error_message = str(exc)
-            self._log(f"unhandled error: {exc}")
+            self._log(f"未处理异常: {exc}")
             return result
         finally:
             result.logs = self.logs

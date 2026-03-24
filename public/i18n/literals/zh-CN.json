@@ -511,5 +511,10 @@
   "Server Disconnected": "服务器已断开",
   "The proxy server has been stopped.": "代理服务器已停止。",
   "Reload Page": "重新加载页面",
-  "Service is running in terminal. You can close this web page. Shutdown will stop the service.": "服务正在终端中运行。您可以关闭此网页。关闭将停止服务。"
+  "Service is running in terminal. You can close this web page. Shutdown will stop the service.": "服务正在终端中运行。您可以关闭此网页。关闭将停止服务。",
+  "Add Free Account": "添加免费账号",
+  "Registering...": "注册中...",
+  "Registering Free Codex Account": "注册免费 Codex 账号",
+  "Starting registration...": "开始注册...",
+  "Registering account...": "正在注册账号..."
 }

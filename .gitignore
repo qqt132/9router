@@ -68,3 +68,8 @@ deploy.sh
 ecosystem.config.*
 start.sh
 
+
+# Python
+__pycache__/
+*.pyc
+*.log

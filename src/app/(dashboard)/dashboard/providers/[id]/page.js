@@ -36,6 +36,9 @@ export default function ProviderDetailPage() {
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
   const [providerStrategy, setProviderStrategy] = useState(null); // null = use global, "round-robin" = override
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
+  const [registeringFreeAccount, setRegisteringFreeAccount] = useState(false);
+  const [registerLogs, setRegisterLogs] = useState([]);
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
   const { copied, copy } = useCopyToClipboard();
 
   const providerInfo = providerNode
@@ -272,6 +275,40 @@ export default function ProviderDetailPage() {
       }
     } catch (error) {
       console.log("Error updating connection:", error);
+    }
+  };
+
+  const handleRegisterFreeAccount = async () => {
+    setRegisteringFreeAccount(true);
+    setRegisterLogs([]);
+    setShowRegisterModal(true);
+
+    try {
+      const res = await fetch(`/api/providers/codex/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count: 1 }),
+      });
+
+      const data = await res.json();
+      
+      if (data.logs) {
+        setRegisterLogs(data.logs);
+      }
+
+      if (res.ok && data.success) {
+        await fetchConnections();
+        setTimeout(() => {
+          setShowRegisterModal(false);
+          setRegisterLogs([]);
+        }, 2000);
+      } else {
+        setRegisterLogs(prev => [...prev, `Error: ${data.error || 'Registration failed'}`]);
+      }
+    } catch (error) {
+      setRegisterLogs(prev => [...prev, `Error: ${error.message}`]);
+    } finally {
+      setRegisteringFreeAccount(false);
     }
   };
 
@@ -781,6 +818,16 @@ export default function ProviderDetailPage() {
                 <Button icon="add" onClick={() => isOAuth ? setShowOAuthModal(true) : setShowAddApiKeyModal(true)}>
                   {providerId === "iflow" ? "OAuth" : "Add Connection"}
                 </Button>
+                {providerId === "codex" && (
+                  <Button 
+                    icon="auto_awesome" 
+                    variant="secondary" 
+                    onClick={handleRegisterFreeAccount}
+                    disabled={registeringFreeAccount}
+                  >
+                    {registeringFreeAccount ? "Registering..." : "Add Free Account"}
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -807,6 +854,17 @@ export default function ProviderDetailPage() {
                 >
                   Add
                 </Button>
+                {providerId === "codex" && (
+                  <Button
+                    size="sm"
+                    icon="auto_awesome"
+                    variant="secondary"
+                    onClick={handleRegisterFreeAccount}
+                    disabled={registeringFreeAccount}
+                  >
+                    {registeringFreeAccount ? "Registering..." : "Add Free Account"}
+                  </Button>
+                )}
               </div>
             )}
           </>
@@ -858,6 +916,41 @@ export default function ProviderDetailPage() {
           onClose={() => setShowIFlowCookieModal(false)}
         />
       )}
+      
+      {/* Free Account Registration Modal */}
+      {showRegisterModal && (
+        <Modal 
+          isOpen={showRegisterModal} 
+          title="Registering Free Codex Account" 
+          onClose={() => !registeringFreeAccount && setShowRegisterModal(false)}
+        >
+          <div className="flex flex-col gap-4">
+            <div className="bg-black/5 dark:bg-white/5 rounded-lg p-4 max-h-96 overflow-y-auto font-mono text-xs">
+              {registerLogs.length === 0 ? (
+                <div className="text-center text-text-muted">Starting registration...</div>
+              ) : (
+                registerLogs.map((log, i) => (
+                  <div key={i} className="text-text-main whitespace-pre-wrap break-all">
+                    {log}
+                  </div>
+                ))
+              )}
+            </div>
+            {registeringFreeAccount && (
+              <div className="flex items-center justify-center gap-2 text-sm text-text-muted">
+                <span className="material-symbols-outlined animate-spin">progress_activity</span>
+                Registering account...
+              </div>
+            )}
+            {!registeringFreeAccount && (
+              <Button onClick={() => setShowRegisterModal(false)} fullWidth>
+                Close
+              </Button>
+            )}
+          </div>
+        </Modal>
+      )}
+
       <AddApiKeyModal
         isOpen={showAddApiKeyModal}
         provider={providerId}

@@ -1,4 +1,4 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getProviderConnections, validateApiKey, updateProviderConnection, deleteProviderConnection, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey } from "open-sse/services/accountFallback.js";
 import { resolveProviderId } from "@/shared/constants/providers.js";
@@ -269,6 +269,24 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   };
 
   if (isAuthError) {
+    if (conn?.provider === "codex") {
+      // For Codex accounts, 401/403 means the account should be removed entirely
+      await deleteProviderConnection(connectionId);
+      log.warn("AUTH", `Auth error [${status}] - deleting Codex account ${connectionId}`);
+
+      const lockKey = Object.keys(lockUpdate)[0];
+      const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
+      const resetInfo = actualResetAt ? "(server resetAt)" : "(local backoff)";
+      const lockValue = lockUpdate[lockKey];
+      log.warn("AUTH", `${connName} deleted due to auth error [${status}] (provider=codex), previous lock context: ${lockKey} until ${lockValue} ${resetInfo}`);
+
+      if (provider && status && reason) {
+        console.error(`❌ ${provider} [${status}]: ${reason}`);
+      }
+
+      return { shouldFallback: true, cooldownMs };
+    }
+
     // 401/403 → mark as unavailable and disable account
     updateData.isActive = false;
     log.warn("AUTH", `Auth error [${status}] - disabling account (set isActive=false)`);

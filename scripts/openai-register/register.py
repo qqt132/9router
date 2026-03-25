@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Standalone OpenAI register + fallback-login script."""
 from __future__ import annotations
-import argparse, base64, json, secrets, sys, time, urllib.parse
+import argparse, base64, json, re, secrets, sys, time, urllib.parse
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -185,25 +185,202 @@ class RegistrationEngine:
             self._log(f"备用登录失败: {exc}")
             self.oauth_start = old_oauth_start
             return False
-    def _get_workspace_id(self) -> Optional[str]:
-        auth_cookie = self.session.cookies.get("oai-client-auth-session")
-        if not auth_cookie:
-            self._log("Auth Cookie 缺失")
-            return None
-        try:
-            payload = auth_cookie.split(".")[0]
-            pad = "=" * ((4 - (len(payload) % 4)) % 4)
-            auth_json = json.loads(base64.urlsafe_b64decode((payload + pad).encode("ascii")).decode("utf-8"))
-            workspaces = auth_json.get("workspaces") or []
-            workspace_id = str((workspaces[0] or {}).get("id") or "").strip() if workspaces else ""
+
+    # ========== 多方案 Workspace 提取方法（来自 Codex Manager）==========
+    
+    def _decode_cookie_json_candidates(self, cookie_value: str) -> List[Dict[str, Any]]:
+        """尝试从完整 Cookie 或其分段中解码出 JSON（方法 1：Cookie 解析）"""
+        decoded_objects = []
+        candidates = [cookie_value]
+        if "." in cookie_value:
+            candidates.extend(cookie_value.split("."))
+        for candidate in candidates:
+            raw = (candidate or "").strip()
+            if not raw:
+                continue
+            pad = "=" * ((4 - (len(raw) % 4)) % 4)
+            try:
+                decoded = base64.urlsafe_b64decode((raw + pad).encode("ascii"))
+            except Exception:
+                continue
+            try:
+                payload = json.loads(decoded.decode("utf-8"))
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                decoded_objects.append(payload)
+        return decoded_objects
+
+    def _extract_workspace_id_from_auth_json(self, auth_json: Dict[str, Any]) -> Optional[str]:
+        """从解码后的授权 JSON 中提取 Workspace ID"""
+        workspaces = auth_json.get("workspaces") or []
+        if isinstance(workspaces, list):
+            for workspace in workspaces:
+                if not isinstance(workspace, dict):
+                    continue
+                workspace_id = str(workspace.get("id") or "").strip()
+                if workspace_id:
+                    return workspace_id
+        for key in ("workspace_id", "workspaceId", "default_workspace_id", "defaultWorkspaceId", "active_workspace_id", "activeWorkspaceId"):
+            workspace_id = str(auth_json.get(key) or "").strip()
             if workspace_id:
-                self._log(f"Workspace ID 已获取: {workspace_id}")
                 return workspace_id
-            self._log("Auth Cookie 中 Workspace 缺失")
+        for key in ("workspace", "default_workspace", "active_workspace", "defaultWorkspace", "activeWorkspace"):
+            workspace = auth_json.get(key)
+            if not isinstance(workspace, dict):
+                continue
+            workspace_id = str(workspace.get("id") or "").strip()
+            if workspace_id:
+                return workspace_id
+        return None
+
+    def _extract_workspace_id_from_cookie(self, cookie_value: str) -> Optional[str]:
+        """方法 1：从授权 Cookie 中提取 Workspace ID（优先级最高）"""
+        for auth_json in self._decode_cookie_json_candidates(cookie_value):
+            workspace_id = self._extract_workspace_id_from_auth_json(auth_json)
+            if workspace_id:
+                self._log(f"[方法1-Cookie] 成功提取 Workspace ID: {workspace_id}")
+                return workspace_id
+        return None
+
+    def _extract_workspace_id_from_html(self, html: str) -> Optional[str]:
+        """方法 2：从 HTML 隐藏表单字段中提取 Workspace ID"""
+        if not html:
             return None
+        patterns = [
+            r'name="workspace_id"[^>]*value="([^"]+)"',
+            r"name='workspace_id'[^>]*value='([^']+)'",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html)
+            if match:
+                workspace_id = str(match.group(1) or "").strip()
+                if workspace_id:
+                    self._log(f"[方法2-HTML] 成功提取 Workspace ID: {workspace_id}")
+                    return workspace_id
+        return None
+
+    def _extract_workspace_id_from_json(self, payload: Any, depth: int = 0) -> Optional[str]:
+        """方法 3：从 JSON 响应中递归提取 Workspace ID"""
+        if payload is None or depth > 5:
+            return None
+        if isinstance(payload, dict):
+            workspace_id = self._extract_workspace_id_from_auth_json(payload)
+            if workspace_id:
+                self._log(f"[方法3-JSON] 成功提取 Workspace ID: {workspace_id}")
+                return workspace_id
+            for value in payload.values():
+                workspace_id = self._extract_workspace_id_from_json(value, depth + 1)
+                if workspace_id:
+                    return workspace_id
+            return None
+        if isinstance(payload, list):
+            for item in payload:
+                workspace_id = self._extract_workspace_id_from_json(item, depth + 1)
+                if workspace_id:
+                    return workspace_id
+        return None
+
+    def _extract_workspace_id_from_url(self, url: str) -> Optional[str]:
+        """方法 4：从 URL 查询参数或片段中提取 Workspace ID"""
+        if not url:
+            return None
+        parsed = urllib.parse.urlparse(url)
+        for raw_query in (parsed.query, parsed.fragment):
+            query = urllib.parse.parse_qs(raw_query)
+            for key in ("workspace_id", "workspaceId", "default_workspace_id", "active_workspace_id"):
+                values = query.get(key) or []
+                if values:
+                    workspace_id = str(values[0] or "").strip()
+                    if workspace_id:
+                        self._log(f"[方法4-URL] 成功提取 Workspace ID: {workspace_id}")
+                        return workspace_id
+        return None
+
+    def _extract_workspace_id_from_text(self, text: str) -> Optional[str]:
+        """方法 5：从 HTML/脚本文本中通过正则提取 Workspace ID"""
+        if not text:
+            return None
+        patterns = [
+            r'"workspace_id"\s*:\s*"([^"]+)"',
+            r'"workspaceId"\s*:\s*"([^"]+)"',
+            r'"default_workspace_id"\s*:\s*"([^"]+)"',
+            r'"defaultWorkspaceId"\s*:\s*"([^"]+)"',
+            r'"active_workspace_id"\s*:\s*"([^"]+)"',
+            r'"activeWorkspaceId"\s*:\s*"([^"]+)"',
+            r'"workspace"\s*:\s*\{[^{}]*"id"\s*:\s*"([^"]+)"',
+            r'"default_workspace"\s*:\s*\{[^{}]*"id"\s*:\s*"([^"]+)"',
+            r'"active_workspace"\s*:\s*\{[^{}]*"id"\s*:\s*"([^"]+)"',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                workspace_id = str(match.group(1) or "").strip()
+                if workspace_id:
+                    self._log(f"[方法5-文本] 成功提取 Workspace ID: {workspace_id}")
+                    return workspace_id
+        return None
+
+    def _get_workspace_id(self) -> Optional[str]:
+        """
+        多方案提取 Workspace ID（按优先级依次尝试）
+        优先级：Cookie → HTML → JSON → URL → 文本 → 备用登录
+        """
+        self._log("开始多方案提取 Workspace ID")
+        
+        # 方法 1：从 Cookie 提取（优先级最高）
+        cookie_names = ("oai-client-auth-session", "oai_client_auth_session", "oai-client-auth-info", "oai_client_auth_info")
+        for cookie_name in cookie_names:
+            auth_cookie = self.session.cookies.get(cookie_name)
+            if auth_cookie:
+                self._log(f"尝试从 Cookie '{cookie_name}' 提取")
+                workspace_id = self._extract_workspace_id_from_cookie(auth_cookie)
+                if workspace_id:
+                    return workspace_id
+        
+        self._log("Cookie 方法未找到 Workspace ID，尝试其他方法")
+        
+        # 方法 2-5：从最近的响应中提取
+        # 尝试重新请求授权页面获取更多信息
+        try:
+            if self.oauth_start:
+                self._log("请求授权页面以获取更多 Workspace 信息")
+                response = self.session.get(self.oauth_start.auth_url, timeout=15)
+                html = response.text or ""
+                current_url = str(getattr(response, "url", "") or "")
+                
+                # 方法 2：HTML 表单字段
+                workspace_id = self._extract_workspace_id_from_html(html)
+                if workspace_id:
+                    return workspace_id
+                
+                # 方法 3：JSON 响应
+                try:
+                    json_data = response.json()
+                    workspace_id = self._extract_workspace_id_from_json(json_data)
+                    if workspace_id:
+                        return workspace_id
+                except Exception:
+                    pass
+                
+                # 方法 4：URL 参数
+                workspace_id = self._extract_workspace_id_from_url(current_url)
+                if workspace_id:
+                    return workspace_id
+                
+                # 方法 5：文本正则
+                workspace_id = self._extract_workspace_id_from_text(html)
+                if workspace_id:
+                    return workspace_id
         except Exception as exc:
-            self._log(f"Workspace Cookie 解码失败: {exc}")
-            return None
+            self._log(f"请求授权页面失败: {exc}")
+        
+        # 所有方法都失败，返回 None（将触发备用登录）
+        self._log("所有 Workspace 提取方法均失败")
+        return None
+
+    # ========== 原有方法保持不变 ==========
+    
     def _select_workspace(self, workspace_id: str) -> Optional[str]:
         response = self.session.post(OPENAI_API_ENDPOINTS["select_workspace"], headers={"referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent", "content-type": "application/json"}, data=json.dumps({"workspace_id": workspace_id}))
         self._log(f"Workspace 选择状态: {response.status_code}")
@@ -297,7 +474,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Standalone OpenAI register + fallback-login tool")
     parser.add_argument("--email-service", default="tempmail", choices=["tempmail"])
     parser.add_argument("--proxy", default=None)
-    parser.add_argument("--count", type=int, default=1)
+    parser.add_argument("--count", type=int, default=5, help="注册账号数量（默认 5）")
+    parser.add_argument("--interval", type=int, default=3, help="账号间隔秒数（默认 3）")
     parser.add_argument("--output", default=None)
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
@@ -305,19 +483,98 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     results: List[Dict[str, Any]] = []
+    success_count = 0
+    failure_count = 0
+    
     def printer(msg: str):
         if not args.quiet:
             print(msg, file=sys.stderr)
+    
+    printer(f"\n{'='*60}")
+    printer(f"开始批量注册 OpenAI 账号")
+    printer(f"总数量: {args.count} | 间隔: {args.interval}秒")
+    printer(f"{'='*60}\n")
+    
     for index in range(args.count):
-        printer(f"=== account {index + 1}/{args.count} ===")
-        engine = RegistrationEngine(TempmailService(proxy_url=args.proxy), proxy_url=args.proxy, callback_logger=printer)
-        results.append(asdict(engine.run()))
-    payload: Any = results[0] if args.count == 1 else results
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
-    if args.output:
-        Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        printer(f"\n{'─'*60}")
+        printer(f"[{index + 1}/{args.count}] 正在注册账号...")
+        printer(f"{'─'*60}")
+        
+        try:
+            engine = RegistrationEngine(
+                TempmailService(proxy_url=args.proxy), 
+                proxy_url=args.proxy, 
+                callback_logger=printer
+            )
+            result = engine.run()
+            result_dict = asdict(result)
+            results.append(result_dict)
+            
+            if result.success:
+                success_count += 1
+                printer(f"\n✅ [{index + 1}/{args.count}] 注册成功")
+                printer(f"   邮箱: {result.email}")
+                printer(f"   密码: {result.password}")
+                printer(f"   账号ID: {result.account_id}")
+            else:
+                failure_count += 1
+                printer(f"\n❌ [{index + 1}/{args.count}] 注册失败")
+                printer(f"   错误: {result.error_message}")
+        
+        except Exception as exc:
+            # 捕获任何未预期的异常，确保循环继续
+            failure_count += 1
+            error_msg = f"未捕获的异常: {type(exc).__name__}: {str(exc)}"
+            printer(f"\n❌ [{index + 1}/{args.count}] 注册过程异常")
+            printer(f"   错误: {error_msg}")
+            
+            # 记录失败结果
+            failed_result = {
+                "success": False,
+                "email": "",
+                "password": "",
+                "account_id": "",
+                "workspace_id": "",
+                "access_token": "",
+                "refresh_token": "",
+                "id_token": "",
+                "session_token": "",
+                "source": "register",
+                "error_message": error_msg,
+                "logs": [f"[异常] {error_msg}"],
+                "metadata": {"exception_type": type(exc).__name__}
+            }
+            results.append(failed_result)
+        
+        # 无论成功或失败，都等待间隔时间（除非是最后一个）
+        if index < args.count - 1:
+            printer(f"\n⏳ 等待 {args.interval} 秒后继续...")
+            time.sleep(args.interval)
+    
+    # 输出汇总统计
+    printer(f"\n{'='*60}")
+    printer(f"批量注册完成")
+    printer(f"{'='*60}")
+    printer(f"✅ 成功: {success_count}/{args.count}")
+    printer(f"❌ 失败: {failure_count}/{args.count}")
+    printer(f"{'='*60}\n")
+    
+    # 输出结果到标准输出
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    
+    output_data = {
+        "timestamp": timestamp,
+        "total": args.count,
+        "success": success_count,
+        "failure": failure_count,
+        "accounts": results
+    }
+    
+    rendered = json.dumps(output_data, ensure_ascii=False, indent=2)
     print(rendered)
-    return 0 if all(item.get("success") for item in results) else 1
+    
+    return 0 if success_count > 0 else 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

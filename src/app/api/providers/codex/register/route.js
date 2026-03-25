@@ -21,6 +21,33 @@ export async function POST(request) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
 
+      const saveAccount = async (account) => {
+        const connection = await createProviderConnection({
+          provider: "codex",
+          authType: "oauth",
+          email: account.email,
+          displayName: account.email,
+          accessToken: account.access_token,
+          refreshToken: account.refresh_token,
+          idToken: account.id_token,
+          expiresIn: account.expires_in,
+          expiresAt: account.expires_in
+            ? new Date(Date.now() + account.expires_in * 1000).toISOString()
+            : null,
+          testStatus: "active",
+        });
+
+        send({
+          type: "success",
+          connection: {
+            id: connection.id,
+            provider: connection.provider,
+            email: connection.email,
+            displayName: connection.displayName,
+          },
+        });
+      };
+
       let stdout = "";
       const pythonProcess = spawn("python3", [
         scriptPath,
@@ -57,40 +84,54 @@ export async function POST(request) {
         return;
       }
 
+      if (result.accounts && Array.isArray(result.accounts)) {
+        let successCount = 0;
+        let failureCount = 0;
+
+        for (const account of result.accounts) {
+          if (account.success === true) {
+            try {
+              await saveAccount(account);
+              successCount++;
+            } catch (err) {
+              send({
+                type: "error",
+                message: `Failed to save ${account.email || "account"}: ${err.message}`,
+              });
+              failureCount++;
+            }
+          } else {
+            send({
+              type: "error",
+              message: `${account.email || "Account"}: ${account.error_message || "Registration failed"}`,
+            });
+            failureCount++;
+          }
+        }
+
+        send({
+          type: "summary",
+          total: result.accounts.length,
+          success: successCount,
+          failure: failureCount,
+        });
+
+        controller.close();
+        return;
+      }
+
       if (!result.success) {
         send({ type: "error", message: result.error_message || "Registration failed" });
         controller.close();
         return;
       }
 
-      // Save to database
       try {
-        const connection = await createProviderConnection({
-          provider: "codex",
-          authType: "oauth",
-          email: result.email,
-          displayName: result.email,
-          accessToken: result.access_token,
-          refreshToken: result.refresh_token,
-          idToken: result.id_token,
-          expiresIn: result.expires_in,
-          expiresAt: result.expires_in
-            ? new Date(Date.now() + result.expires_in * 1000).toISOString()
-            : null,
-          testStatus: "active",
-        });
-
-        send({
-          type: "success",
-          connection: {
-            id: connection.id,
-            provider: connection.provider,
-            email: connection.email,
-            displayName: connection.displayName,
-          },
-        });
+        await saveAccount(result);
+        send({ type: "summary", total: 1, success: 1, failure: 0 });
       } catch (err) {
         send({ type: "error", message: `Failed to save account: ${err.message}` });
+        send({ type: "summary", total: 1, success: 0, failure: 1 });
       }
 
       controller.close();

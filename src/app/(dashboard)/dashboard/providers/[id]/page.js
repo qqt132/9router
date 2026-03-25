@@ -289,7 +289,7 @@ export default function ProviderDetailPage() {
       const res = await fetch(`/api/providers/codex/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: 1 }),
+        body: JSON.stringify({ count: 5 }),
       });
 
       const reader = res.body.getReader();

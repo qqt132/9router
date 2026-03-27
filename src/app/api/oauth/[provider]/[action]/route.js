@@ -8,6 +8,10 @@ import {
 } from "@/lib/oauth/providers";
 import { createProviderConnection } from "@/models";
 
+function isUnknownProviderError(error) {
+  return error instanceof Error && typeof error.message === "string" && error.message.startsWith("Unknown provider:");
+}
+
 /**
  * Dynamic OAuth API Route
  * Handles: authorize, exchange, device-code, poll
@@ -53,6 +57,9 @@ export async function GET(request, { params }) {
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (error) {
     console.log("OAuth GET error:", error);
+    if (isUnknownProviderError(error)) {
+      return NextResponse.json({ error: error.message.replace("Unknown provider:", "Unknown OAuth provider:").trim() }, { status: 400 });
+    }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -161,6 +168,9 @@ export async function POST(request, { params }) {
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (error) {
     console.log("OAuth POST error:", error);
+    if (isUnknownProviderError(error)) {
+      return NextResponse.json({ error: error.message.replace("Unknown provider:", "Unknown OAuth provider:").trim() }, { status: 400 });
+    }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

@@ -1,0 +1,17 @@
+
+> 9router-app@0.3.60 start
+> NODE_ENV=production next start
+
+▲ Next.js 16.2.0
+- Local:         http://localhost:20128
+- Network:       http://192.168.100.4:20128
+✓ Ready in 59ms
+⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
+ We detected multiple lockfiles and selected the directory of /Users/irobotx/package-lock.json as the root directory.
+ To silence this warning, set `outputFileTracingRoot` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
+   See https://nextjs.org/docs/app/api-reference/config/next-config-js/output#caveats for more information.
+ Detected additional lockfiles: 
+   * /Users/irobotx/.openclaw/workspace/9router/package-lock.json
+
+Error: Could not find a production build in the '.next' directory. Try building your app with 'next build' before starting the production server. https://nextjs.org/docs/messages/production-start-no-build-id
+    at ignore-listed frames
